@@ -1,0 +1,97 @@
+-----------------------------------------------------------------------------
+# PASO 1: Limpieza y reestructuración de `pp`
+#------------------------------------------------------------------------------
+
+# 1) Renombrar columnas
+pp = pp.rename(
+    columns={
+        "Unnamed: 0": "descartar",
+        "Unnamed: 1": "Edad",
+        "Unnamed: 2": "Poblacion",
+        "Unnamed: 3": "%",
+        "Unnamed: 4": "Acumulado %"
+    }
+)
+
+# 2) Eliminar filas completamente vacías
+pp = pp.dropna(how="all")
+
+# 3) Quitar filas que tengan 'Total' en 'Edad'
+pp = pp[pp['Edad'] != 'Total']
+
+# 4) Crear columnas "Área" y "Comuna" para detectar "AREA #..."
+pp["Área"] = None
+pp["Comuna"] = None
+
+area_actual = None
+comuna_actual = None
+
+# 5) Iterar sobre las filas para detectar "AREA #..." y asociarlas
+for i, row in pp.iterrows():
+    valor_edad = row["Edad"]
+    if isinstance(valor_edad, str) and "AREA #" in valor_edad:
+        area_actual = valor_edad
+        comuna_actual = row["Poblacion"]
+        # Se anula la columna "Edad" en esa fila (era un encabezado)
+        pp.at[i, "Edad"] = None
+    
+    pp.at[i, "Área"]   = area_actual
+    pp.at[i, "Comuna"] = comuna_actual
+
+# 6) Extraer codigo_provincia y codigo_depto de la cadena “AREA #...”
+pp['codigo_provincia'] = pp['Área'].str[7:9]  # p.ej. "02"
+pp['codigo_depto']     = pp['Área'].str[9:]   # p.ej. "007"
+
+# (NO borramos "Área" para conservar la diferenciación de homónimos)
+
+# 7) Eliminar filas a partir de la palabra 'RESUMEN'
+indice_resumen = pp[pp["Edad"] == "RESUMEN"].index
+if not indice_resumen.empty:
+    primer_resumen = indice_resumen.min()
+    pp = pp.loc[:primer_resumen - 1]
+
+# 8) Eliminar filas que tengan NaN en la columna '%'
+pp = pp.dropna(subset=["%"])
+
+# 9) Eliminar filas que todavía tengan 'Edad' en la columna Edad (eran encabezados)
+pp = pp[pp['Edad'] != 'Edad']
+
+# 10) Eliminar la columna 'descartar' si existe
+pp = pp.drop(columns=['descartar'], errors='ignore')
+
+# 11) Unificar comunas de CABA
+pp["Comuna"] = pp["Comuna"].astype(str)
+pp["Comuna"] = np.where(
+    pp["Comuna"].str.startswith("Comuna"), 
+    "ciudad autonoma de buenos aires", 
+    pp["Comuna"]
+)
+pp.rename(columns={"Comuna": "Departamento"}, inplace=True)
+
+# 12) Agrupar filas de CABA (provincia "02") en un solo Departamento
+mascara_caba = (pp["codigo_provincia"] == "02")
+pp_caba = (
+    pp[mascara_caba]
+    .groupby("Edad", as_index=False)
+    .agg({
+        "Poblacion": "sum",
+        "%": "sum",
+        "Acumulado %": "sum"
+    })
+)
+
+pp_caba["codigo_provincia"] = "02"
+pp_caba["codigo_depto"]     = "000"
+pp_caba["Departamento"]     = "ciudad autonoma de buenos aires"
+
+# ----- LÍNEA NUEVA ------
+# Asignamos un “Área” específico, en vez de None.
+pp_caba["Área"] = "AREA # 02000"
+# ------------------------
+
+# Resto igual
+pp_sin_caba = pp[~mascara_caba]
+pp = pd.concat([pp_caba, pp_sin_caba], ignore_index=True)
+
+# (Si quieres quitar tildes)
+pp["Departamento"] = pp["Departamento"].apply(quitar_tildes)
